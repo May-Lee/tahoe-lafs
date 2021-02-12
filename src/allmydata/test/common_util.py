@@ -7,6 +7,9 @@ from past.builtins import unicode
 import os
 import time
 import signal
+from functools import (
+    partial,
+)
 from random import randrange
 from six.moves import StringIO
 from io import (
@@ -81,7 +84,7 @@ def run_cli_native(verb, *args, **kwargs):
         args=args,
         nodeargs=nodeargs,
     )
-    argv = nodeargs + [verb] + list(args)
+    argv = ["tahoe"] + nodeargs + [verb] + list(args)
     stdin = kwargs.get("stdin", "")
     if encoding is None:
         # The original behavior, the Python 2 behavior, is to accept either
@@ -100,10 +103,20 @@ def run_cli_native(verb, *args, **kwargs):
         stdout = TextIOWrapper(BytesIO(), encoding)
         stderr = TextIOWrapper(BytesIO(), encoding)
     d = defer.succeed(argv)
-    d.addCallback(runner.parse_or_exit_with_explanation, stdout=stdout)
-    d.addCallback(runner.dispatch,
-                  stdin=StringIO(stdin),
-                  stdout=stdout, stderr=stderr)
+    d.addCallback(
+        partial(
+            runner.parse_or_exit_with_explanation_with_config,
+            runner.Options(),
+        ),
+        stdout=stdout,
+        stderr=stderr,
+    )
+    d.addCallback(
+        runner.dispatch,
+        stdin=StringIO(stdin),
+        stdout=stdout,
+        stderr=stderr,
+    )
     def _done(rc):
         return 0, _getvalue(stdout), _getvalue(stderr)
     def _err(f):

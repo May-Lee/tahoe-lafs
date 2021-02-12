@@ -6,6 +6,11 @@ from __future__ import (
 import os.path, re, sys
 from os import linesep
 
+import six
+
+from testtools import (
+    skipUnless,
+)
 from eliot import (
     log_call,
 )
@@ -26,6 +31,10 @@ from allmydata.util import fileutil, pollmixin
 from allmydata.util.encodingutil import unicode_to_argv, get_filesystem_encoding
 from allmydata.test import common_util
 import allmydata
+from allmydata.scripts.runner import (
+    parse_options,
+)
+
 from .common import (
     PIPE,
     Popen,
@@ -43,6 +52,9 @@ from .cli_node_api import (
 from ..util.eliotutil import (
     inline_callbacks,
 )
+from .common import (
+    SyncTestCase,
+)
 
 def get_root_from_file(src):
     srcdir = os.path.dirname(os.path.dirname(os.path.normcase(os.path.realpath(src))))
@@ -59,6 +71,27 @@ def get_root_from_file(src):
 
 srcfile = allmydata.__file__
 rootdir = get_root_from_file(srcfile)
+
+
+class ParseOptionsTests(SyncTestCase):
+    """
+    Tests for ``parse_options``.
+    """
+    @skipUnless(six.PY2, "Only Python 2 exceptions must stringify to bytes.")
+    def test_nonascii_unknown_subcommand_python2(self):
+        """
+        When ``parse_options`` is called with an argv indicating a subcommand that
+        does not exist and which also contains non-ascii characters, the
+        exception it raises includes the subcommand encoded as UTF-8.
+        """
+        tricky = u"\u2621"
+        try:
+            parse_options([unicode_to_argv(tricky, mangle=True)])
+        except usage.error as e:
+            self.assertEqual(
+                b"Unknown command: " + tricky.encode("utf-8"),
+                str(e)
+            )
 
 
 @log_call(action_type="run-bin-tahoe")

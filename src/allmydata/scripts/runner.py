@@ -112,16 +112,45 @@ def parse_options(argv, config=None):
     config.parseOptions(argv) # may raise usage.error
     return config
 
-def parse_or_exit_with_explanation(argv, stdout=sys.stdout):
-    config = Options()
+def parse_or_exit_with_explanation_with_config(config, argv, stdout, stderr):
+    """
+    Parse Tahoe-LAFS CLI arguments and return a configuration object if they
+    are valid.
+
+    If they are invalid, write an explanation to ``stdout`` and exit.
+
+    :param allmydata.scripts.runner.Options config: An instance of the
+        argument-parsing class to use.
+
+    :param [str] argv: The argument list to parse, including the name of the
+        program being run as ``argv[0]``.
+
+    :param stdout: The file-like object to use as stdout.
+    :param stderr: The file-like object to use as stderr.
+
+    :raise SystemExit: If there is an argument-parsing problem.
+
+    :return: ``config``, after using it to parse the argument list.
+    """
     try:
-        parse_options(argv, config=config)
+        parse_options(argv[1:], config=config)
     except usage.error as e:
+        # `parse_options` may have the side-effect of initializing a
+        # "sub-option" of the given configuration, even if it ultimately
+        # raises an exception.  For example, `tahoe run --invalid-option` will
+        # set `config.subOptions` to an instance of
+        # `allmydata.scripts.tahoe_run.RunOptions` and then raise a
+        # `usage.error` because `RunOptions` does not recognize
+        # `--invalid-option`.  If `run` itself had a sub-options then the same
+        # thing could happen but with another layer of nesting.  We can
+        # present the user with the most precise information about their usage
+        # error possible by finding the most "sub" of the sub-options and then
+        # showing that to the user along with the usage error.
         c = config
         while hasattr(c, 'subOptions'):
             c = c.subOptions
         print(str(c), file=stdout)
-        print("%s:  %s\n" % (sys.argv[0], e), file=stdout)
+        print("%s:  %s\n" % (sys.argv[0], quote_output(e, quotemarks=False), file=stdout)
         sys.exit(1)
     return config
 
@@ -173,7 +202,20 @@ def _maybe_enable_eliot_logging(options, reactor):
     # Pass on the options so we can dispatch the subcommand.
     return options
 
-def run():
+def run(configFactory=Options, argv=sys.argv, stdout=sys.stdout, stderr=sys.stderr):
+    """
+    Run a Tahoe-LAFS node.
+
+    :param configFactory: A zero-argument callable which creates the config
+        object to use to parse the argument list.
+
+    :param [str] argv: The argument list to use to configure the run.
+
+    :param stdout: The file-like object to use for stdout.
+    :param stderr: The file-like object to use for stderr.
+
+    :raise SystemExit: Always raised after the run is complete.
+    """
     if not six.PY2:
         warnings.warn("Support for Python 3 is experimental. Use at your own risk.")
 
@@ -181,19 +223,44 @@ def run():
         from allmydata.windows.fixups import initialize
         initialize()
     # doesn't return: calls sys.exit(rc)
-    task.react(_run_with_reactor)
+    task.react(
+        lambda reactor: _run_with_reactor(
+            reactor,
+            configFactory(),
+            argv,
+            stdout,
+            stderr,
+        ),
+    )
 
 
-def _setup_coverage(reactor):
+def _setup_coverage(reactor, argv):
     """
-    Arrange for coverage to be collected if the 'coverage' package is
-    installed
+    If coverage measurement was requested, start collecting coverage
+    measurements and arrange to record those measurements when the process is
+    done.
+
+    Coverage measurement is considered requested if ``"--coverage"`` is in
+    ``argv`` (and it will be removed from ``argv`` if it is found).  There
+    should be a ``.coveragerc`` file in the working directory if coverage
+    measurement is requested.
+
+    This is only necessary to support multi-process coverage measurement,
+    typically when the test suite is running, and with the pytest-based
+    *integration* test suite (at ``integration/`` in the root of the source
+    tree) foremost in mind.  The idea is that if you are running Tahoe-LAFS in
+    a configuration where multiple processes are involved - for example, a
+    test process and a client node process, if you only measure coverage from
+    the test process then you will fail to observe most Tahoe-LAFS code that
+    is being run.
+
+    This function arranges to have any Tahoe-LAFS process (such as that
+    client node process) collect and report coverage measurements as well.
     """
-    # can we put this _setup_coverage call after we hit
-    # argument-parsing?
-    if '--coverage' not in sys.argv:
+    # can we put this _setup_coverage call after we hit argument-parsing?
+    if '--coverage' not in argv:
         return
-    sys.argv.remove('--coverage')
+    argv.remove('--coverage')
 
     try:
         import coverage
@@ -224,13 +291,35 @@ def _setup_coverage(reactor):
     reactor.addSystemEventTrigger('after', 'shutdown', write_coverage_data)
 
 
-def _run_with_reactor(reactor):
+def _run_with_reactor(reactor, config, argv, stdout, stderr):
+    """
+    Run a Tahoe-LAFS node using the given reactor.
 
-    _setup_coverage(reactor)
+    :param reactor: The reactor to use.  This implementation largely ignores
+        this and lets the rest of the implementation pick its own reactor.
+        Oops.
 
-    d = defer.maybeDeferred(parse_or_exit_with_explanation, sys.argv[1:])
+    :param twisted.python.usage.Options config: The config object to use to
+        parse the argument list.
+
+    :param argv: See ``run``.
+
+    :param stdout: See ``run``.
+    :param stderr: See ``run``.
+
+    :return: A ``Deferred`` that fires when the run is complete.
+    """
+    _setup_coverage(reactor, argv)
+
+    d = defer.maybeDeferred(
+        parse_or_exit_with_explanation_with_config,
+        config,
+        argv,
+        stdout,
+        stderr,
+    )
     d.addCallback(_maybe_enable_eliot_logging, reactor)
-    d.addCallback(dispatch)
+    d.addCallback(dispatch, stdout=stdout, stderr=stderr)
     def _show_exception(f):
         # when task.react() notices a non-SystemExit exception, it does
         # log.err() with the failure and then exits with rc=1. We want this
@@ -238,7 +327,7 @@ def _run_with_reactor(reactor):
         # weren't using react().
         if f.check(SystemExit):
             return f # dispatch function handled it
-        f.printTraceback(file=sys.stderr)
+        f.printTraceback(file=stderr)
         sys.exit(1)
     d.addErrback(_show_exception)
     return d
