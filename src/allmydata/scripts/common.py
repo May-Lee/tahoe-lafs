@@ -291,5 +291,7 @@ def escape_path(path):
     >>> escaped.encode('ascii').decode('ascii') == escaped
     True
     """
+    if isinstance(path, bytes):
+        path = path.decode('utf-8')
     segments = path.split("/")
     return "/".join([urllib.parse.quote(unicode_to_url(s)) for s in segments])
